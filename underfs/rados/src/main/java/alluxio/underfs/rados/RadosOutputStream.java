@@ -13,11 +13,10 @@ package alluxio.underfs.rados;
 
 import alluxio.util.io.PathUtils;
 
-import com.aliyun.oss.OSSClient;
-import com.aliyun.oss.ServiceException;
-import com.aliyun.oss.model.ObjectMetadata;
+import com.ceph.rados.IoCTX;
+import com.ceph.rados.exceptions.RadosException;
+
 import com.google.common.base.Preconditions;
-import org.apache.commons.codec.binary.Base64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,35 +27,28 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.security.DigestOutputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
 /**
- * A stream for writing a file into OSS. The data will be persisted to a temporary directory on the
+ * A stream for writing a file into Ceph RADOS. The data will be persisted to a temporary directory on the
  * local disk and copied as a complete file when the {@link #close()} method is called.
  */
 @NotThreadSafe
 public final class RadosOutputStream extends OutputStream {
   private static final Logger LOG = LoggerFactory.getLogger(RadosOutputStream.class);
 
-  /** Bucket name of the Alluxio OSS bucket. */
-  private final String mBucketName;
-  /** Key of the file when it is uploaded to OSS. */
+  /** The path of the object to write. */
   private final String mKey;
+  /** The IoCtx for object operations. */
+  private final IoCTX mIoCtx;
   /** The local file that will be uploaded when the stream is closed. */
   private final File mFile;
-  /** The oss client for OSS operations. */
-  private final OSSClient mOssClient;
 
   /** The outputstream to a local file where the file will be buffered until closed. */
   private OutputStream mLocalOutputStream;
-  /** The MD5 hash of the file. */
-  private MessageDigest mHash;
 
   /** Flag to indicate this stream has been closed, to ensure close is only done once. */
   private AtomicBoolean mClosed = new AtomicBoolean(false);
@@ -64,31 +56,18 @@ public final class RadosOutputStream extends OutputStream {
   /**
    * Creates a name instance of {@link RadosOutputStream}.
    *
-   * @param bucketName the name of the bucket
    * @param key the key of the file
-   * @param client the client for OSS
+   * @param ioctx the IoCtx for Ceph pool
    */
-  public RadosOutputStream(String bucketName, String key, OSSClient client) throws IOException {
-    Preconditions.checkArgument(bucketName != null && !bucketName.isEmpty(),
-        "Bucket name must not be null or empty.");
+  public RadosOutputStream(String key, IoCTX ioctx) throws IOException {
     Preconditions.checkArgument(key != null && !key.isEmpty(),
-        "OSS path must not be null or empty.");
-    Preconditions.checkArgument(client != null, "OSSClient must not be null.");
-    mBucketName = bucketName;
+        "Ceph Rados path must not be null or empty.");
+    Preconditions.checkArgument(ioctx != null, "IOCtx must not be null.");
     mKey = key;
-    mOssClient = client;
+    mIoCtx = ioctx;
 
     mFile = new File(PathUtils.concatPath("/tmp", UUID.randomUUID()));
-
-    try {
-      mHash = MessageDigest.getInstance("MD5");
-      mLocalOutputStream =
-          new BufferedOutputStream(new DigestOutputStream(new FileOutputStream(mFile), mHash));
-    } catch (NoSuchAlgorithmException e) {
-      LOG.warn("Algorithm not available for MD5 hash.", e);
-      mHash = null;
-      mLocalOutputStream = new BufferedOutputStream(new FileOutputStream(mFile));
-    }
+    mLocalOutputStream = new BufferedOutputStream(new FileOutputStream(mFile));
   }
 
   /**
@@ -148,15 +127,14 @@ public final class RadosOutputStream extends OutputStream {
     try {
       BufferedInputStream in = new BufferedInputStream(
           new FileInputStream(mFile));
-      ObjectMetadata objMeta = new ObjectMetadata();
-      objMeta.setContentLength(mFile.length());
-      if (mHash != null) {
-        byte[] hashBytes = mHash.digest();
-        objMeta.setContentMD5(new String(Base64.encodeBase64(hashBytes)));
-      }
-      mOssClient.putObject(mBucketName, mKey, in, objMeta);
+
+      int len = (int)mFile.length();
+      byte[] buf = new byte[len];
+      int r = in.read(buf);
+
+      mIoCtx.writeFull(mKey, buf, r);
       mFile.delete();
-    } catch (ServiceException e) {
+    } catch (RadosException e) {
       LOG.error("Failed to upload {}. Temporary file @ {}", mKey, mFile.getPath());
       throw new IOException(e);
     }

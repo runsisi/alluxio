@@ -71,6 +71,8 @@ public final class Constants {
   // See https://cloud.google.com/storage/docs/cloud-console
   public static final String HEADER_GCS = "gs://";
 
+  public static final String HEADER_RADOS = "rados://";
+
   public static final int MAX_PORT = 65535;
 
   public static final int MAX_TEST_PROCESS_LIFETIME_MS = 20 * Constants.MINUTE_MS;

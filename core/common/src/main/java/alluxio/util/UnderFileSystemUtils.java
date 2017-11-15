@@ -132,6 +132,14 @@ public final class UnderFileSystemUtils {
   }
 
   /**
+   * @param ufs the {@link UnderFileSystem} implementation to check
+   * @return true if the implementation is a Ceph RADOS storage implementation
+   */
+  public static boolean isRados(UnderFileSystem ufs) {
+    return "rados".equals(ufs.getUnderFSType());
+  }
+
+  /**
    * @param uri the UFS path
    * @return the bucket or container name of the object storage
    */

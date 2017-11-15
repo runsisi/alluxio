@@ -13,12 +13,9 @@ package alluxio.underfs.rados;
 
 import alluxio.underfs.MultiRangeObjectInputStream;
 
-import com.aliyun.oss.OSSClient;
-import com.aliyun.oss.model.GetObjectRequest;
-import com.aliyun.oss.model.OSSObject;
-import com.aliyun.oss.model.ObjectMetadata;
+import com.ceph.rados.IoCTX;
 
-import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -31,17 +28,10 @@ import javax.annotation.concurrent.NotThreadSafe;
 @NotThreadSafe
 public class RadosInputStream extends MultiRangeObjectInputStream {
 
-  /** Bucket name of the Alluxio OSS bucket. */
-  private final String mBucketName;
-
-  /** Key of the file in OSS to read. */
+  /** The path of the object to read. */
   private final String mKey;
-
-  /** The OSS client for OSS operations. */
-  private final OSSClient mOssClient;
-
-  /** The size of the object in bytes. */
-  private final long mContentLength;
+  /** The IoCtx for object operations. */
+  private final IoCTX mIoCtx;
 
   /**
    * Creates a new instance of {@link RadosInputStream}.
@@ -50,8 +40,8 @@ public class RadosInputStream extends MultiRangeObjectInputStream {
    * @param key the key of the file
    * @param client the client for OSS
    */
-  RadosInputStream(String bucketName, String key, OSSClient client) throws IOException {
-    this(bucketName, key, client, 0L);
+  public RadosInputStream(String key, IoCTX ioctx) throws IOException {
+    this(key, ioctx, 0L);
   }
 
   /**
@@ -62,22 +52,19 @@ public class RadosInputStream extends MultiRangeObjectInputStream {
    * @param client the client for OSS
    * @param position the position to begin reading from
    */
-  RadosInputStream(String bucketName, String key, OSSClient client, long position)
+  public RadosInputStream(String key, IoCTX ioctx, long position)
       throws IOException {
-    mBucketName = bucketName;
     mKey = key;
-    mOssClient = client;
+    mIoCtx = ioctx;
     mPos = position;
-    ObjectMetadata meta = mOssClient.getObjectMetadata(mBucketName, key);
-    mContentLength = meta == null ? 0 : meta.getContentLength();
   }
 
   @Override
   protected InputStream createStream(long startPos, long endPos) throws IOException {
-    GetObjectRequest req = new GetObjectRequest(mBucketName, mKey);
-    // OSS returns entire object if we read past the end
-    req.setRange(startPos, endPos < mContentLength ? endPos - 1 : mContentLength - 1);
-    OSSObject ossObject = mOssClient.getObject(req);
-    return new BufferedInputStream(ossObject.getObjectContent());
+    int len = (int)(endPos - startPos + 1);
+    byte[] buf = new byte[len];
+
+    int r = mIoCtx.read(mKey, len, startPos, buf);
+    return new ByteArrayInputStream(buf, 0, r);
   }
 }

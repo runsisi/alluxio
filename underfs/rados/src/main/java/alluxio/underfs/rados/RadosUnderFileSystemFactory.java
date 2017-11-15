@@ -13,7 +13,6 @@ package alluxio.underfs.rados;
 
 import alluxio.AlluxioURI;
 import alluxio.Constants;
-import alluxio.PropertyKey;
 import alluxio.underfs.UnderFileSystem;
 import alluxio.underfs.UnderFileSystemConfiguration;
 import alluxio.underfs.UnderFileSystemFactory;
@@ -21,12 +20,10 @@ import alluxio.underfs.UnderFileSystemFactory;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
 
-import java.io.IOException;
-
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
- * Factory for creating {@link OSSUnderFileSystem}.
+ * Factory for creating {@link RadosUnderFileSystem}.
  */
 @ThreadSafe
 public class RadosUnderFileSystemFactory implements UnderFileSystemFactory {
@@ -40,31 +37,15 @@ public class RadosUnderFileSystemFactory implements UnderFileSystemFactory {
   public UnderFileSystem create(String path, UnderFileSystemConfiguration conf) {
     Preconditions.checkNotNull(path, "path");
 
-    if (checkOSSCredentials(conf)) {
-      try {
-        return RadosUnderFileSystem.createInstance(new AlluxioURI(path), conf);
-      } catch (Exception e) {
-        throw Throwables.propagate(e);
-      }
+    try {
+      return RadosUnderFileSystem.createInstance(new AlluxioURI(path), conf);
+    } catch (Exception e) {
+      throw Throwables.propagate(e);
     }
-
-    String err = "OSS Credentials not available, cannot create OSS Under File System.";
-    throw Throwables.propagate(new IOException(err));
   }
 
   @Override
   public boolean supportsPath(String path) {
-    return path != null && path.startsWith(Constants.HEADER_OSS);
-  }
-
-  /**
-   * @param conf optional configuration object for the UFS
-   *
-   * @return true if both access, secret and endpoint keys are present, false otherwise
-   */
-  private boolean checkOSSCredentials(UnderFileSystemConfiguration conf) {
-    return conf.containsKey(PropertyKey.OSS_ACCESS_KEY)
-        && conf.containsKey(PropertyKey.OSS_SECRET_KEY)
-        && conf.containsKey(PropertyKey.OSS_ENDPOINT_KEY);
+    return path != null && path.startsWith(Constants.HEADER_RADOS);
   }
 }
