@@ -470,6 +470,51 @@ public final class PropertyKey implements Comparable<PropertyKey> {
           .setDefaultValue("50sec")
           .setDescription("Length of the socket timeout when communicating with S3.")
           .build();
+  public static final PropertyKey UNDERFS_CEPHFS_CONF_FILE =
+      new Builder(Name.UNDERFS_CEPHFS_CONF_FILE)
+          .setDefaultValue("/etc/ceph/ceph.conf")
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_CONF_OPTS =
+      new Builder(Name.UNDERFS_CEPHFS_CONF_OPTS)
+          .setDefaultValue(null)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_ROOT_DIR =
+      new Builder(Name.UNDERFS_CEPHFS_ROOT_DIR)
+          .setDefaultValue("/")
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_LOCALIZE_READS =
+      new Builder(Name.UNDERFS_CEPHFS_LOCALIZE_READS)
+          .setDefaultValue(true)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_AUTH_ID =
+      new Builder(Name.UNDERFS_CEPHFS_AUTH_ID)
+          .setDefaultValue(null)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_AUTH_KEYFILE =
+      new Builder(Name.UNDERFS_CEPHFS_AUTH_KEYFILE)
+          .setDefaultValue(null)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_AUTH_KEYRING =
+      new Builder(Name.UNDERFS_CEPHFS_AUTH_KEYRING)
+          .setDefaultValue(null)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_MON_ADDR =
+      new Builder(Name.UNDERFS_CEPHFS_MON_ADDR)
+          .setDefaultValue(null)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
+  public static final PropertyKey UNDERFS_CEPHFS_PORT =
+      new Builder(Name.UNDERFS_CEPHFS_PORT)
+          .setDefaultValue(6789)
+          .setDescription("Length of the socket timeout when communicating with S3.")
+          .build();
 
   //
   // UFS access control related properties
@@ -2018,6 +2063,26 @@ public final class PropertyKey implements Comparable<PropertyKey> {
     public static final String UNDERFS_S3_THREADS_MAX = "alluxio.underfs.s3.threads.max";
     public static final String UNDERFS_S3_UPLOAD_THREADS_MAX =
         "alluxio.underfs.s3.upload.threads.max";
+    public static final String UNDERFS_CEPHFS_OBJECT_SIZE =
+        "alluxio.underfs.cephfs.object.size";
+    public static final String UNDERFS_CEPHFS_CONF_FILE =
+        "alluxio.underfs.cephfs.conf.file";
+    public static final String UNDERFS_CEPHFS_CONF_OPTS =
+        "alluxio.underfs.cephfs.conf.options";
+    public static final String UNDERFS_CEPHFS_ROOT_DIR =
+        "alluxio.underfs.cephfs.root.dir";
+    public static final String UNDERFS_CEPHFS_LOCALIZE_READS =
+        "alluxio.underfs.cephfs.localize.reads";
+    public static final String UNDERFS_CEPHFS_AUTH_ID =
+        "alluxio.underfs.cephfs.auth.id";
+    public static final String UNDERFS_CEPHFS_AUTH_KEYFILE =
+        "alluxio.underfs.cephfs.auth.keyfile";
+    public static final String UNDERFS_CEPHFS_AUTH_KEYRING =
+        "alluxio.underfs.cephfs.auth.keyring";
+    public static final String UNDERFS_CEPHFS_MON_ADDR =
+        "alluxio.underfs.cephfs.mon.address";
+    public static final String UNDERFS_CEPHFS_PORT =
+        "alluxio.underfs.cephfs.port";
 
     //
     // UFS access control related properties
