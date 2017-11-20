@@ -34,10 +34,13 @@ import alluxio.underfs.options.OpenOptions;
 import alluxio.util.io.PathUtils;
 
 import com.ceph.crush.Bucket;
+import com.ceph.fs.CephFileAlreadyExistsException;
 import com.ceph.fs.CephFileExtent;
 import com.ceph.fs.CephMount;
+import com.ceph.fs.CephNotDirectoryException;
 import com.ceph.fs.CephStat;
 import com.ceph.fs.CephStatVFS;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,7 +58,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 /**
- * HDFS {@link UnderFileSystem} implementation.
+ * CephFS {@link UnderFileSystem} implementation.
  */
 @ThreadSafe
 public class CephFSUnderFileSystem extends BaseUnderFileSystem
@@ -63,7 +66,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
   private static final Logger LOG = LoggerFactory.getLogger(CephFSUnderFileSystem.class);
   private static final int MAX_TRY = 5;
 
-  private CephFileSystem mFileSystem;
+  private CephMount mMount;
 
   /**
    * Factory method to constructs a new HDFS {@link UnderFileSystem} instance.
@@ -72,7 +75,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
    * @param conf the configuration for Hadoop
    * @return a new CephFS {@link UnderFileSystem} instance
    */
-  public static CephFSUnderFileSystem createInstance(
+  static CephFSUnderFileSystem createInstance(
       AlluxioURI ufsUri, UnderFileSystemConfiguration conf) {
     return new CephFSUnderFileSystem(ufsUri, conf);
   }
@@ -83,96 +86,90 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
    * @param ufsUri the {@link AlluxioURI} for this UFS
    * @param conf the configuration for this UFS
    */
-  public CephFSUnderFileSystem(AlluxioURI ufsUri, UnderFileSystemConfiguration conf) {
+  CephFSUnderFileSystem(AlluxioURI ufsUri, UnderFileSystemConfiguration conf) {
     super(ufsUri, conf);
 
     try {
-      initialize(ufsUri, conf);
+      /*
+       * Create mount with auth user id
+       */
+      String userId = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_ID);
+      mMount = new CephMount(userId);
+
+      /*
+       * Load a configuration file if specified
+       */
+      String configfile = conf.getValue(PropertyKey.UNDERFS_CEPHFS_CONF_FILE);
+      if (configfile != null) {
+        mMount.conf_read_file(configfile);
+      }
+
+      /* Set auth keyfile */
+      String keyfile = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_KEYFILE);
+      if (keyfile != null) {
+        mMount.conf_set("keyfile", keyfile);
+      }
+
+      /* Set auth keyring */
+      String keyring = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_KEYRING);
+      if (keyring != null) {
+        mMount.conf_set("keyring", keyring);
+      }
+
+      /* Set monitor */
+      String monAddr;
+      String monHost = ufsUri.getHost();
+      int monPort = ufsUri.getPort();
+      if (monHost != null && monPort != -1) {
+        monAddr = monHost + ":" + monPort;
+      } else {
+        monAddr = conf.getValue(PropertyKey.UNDERFS_CEPHFS_MON_ADDR);
+      }
+      if (monAddr != null) {
+        mMount.conf_set("mon_host", monAddr);
+      }
+
+      /*
+       * Parse and set Ceph configuration options
+       */
+      String configopts = conf.getValue(PropertyKey.UNDERFS_CEPHFS_CONF_OPTS);
+      if (configopts != null) {
+        String[] options = configopts.split(",");
+        for (String option : options) {
+          String[] keyval = option.split("=");
+          if (keyval.length != 2) {
+            throw new IllegalArgumentException("Invalid Ceph option: " + option);
+          }
+          String key = keyval[0];
+          String val = keyval[1];
+          try {
+            mMount.conf_set(key, val);
+          } catch (Exception e) {
+            throw new IOException("Error setting Ceph option " + key + " = " + val);
+          }
+        }
+      }
+
+      /*
+       * Use a different root?
+       */
+      String root = conf.getValue(PropertyKey.UNDERFS_CEPHFS_ROOT_DIR);
+
+      /* Actually mount the file system */
+      mMount.mount(root);
+
+      /*
+       * Allow reads from replica objects?
+       */
+      String localizeReads = conf.getValue(PropertyKey.UNDERFS_CEPHFS_LOCALIZE_READS);
+      boolean bLocalize = Boolean.parseBoolean(localizeReads);
+      mMount.localize_reads(bLocalize);
+
+      mMount.chdir("/");
     } catch (IOException e) {
       throw new RuntimeException(
           String.format("Failed to get CephFS FileSystem client for %s", ufsUri), e);
     }
-  }
-
-  private void initialize(AlluxioURI uri, UnderFileSystemConfiguration conf) throws IOException {
-    /*
-     * Create mount with auth user id
-     */
-    String userId = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_ID);
-    CephMount mount = new CephMount(userId);
-
-    /*
-     * Load a configuration file if specified
-     */
-    String configfile = conf.getValue(PropertyKey.UNDERFS_CEPHFS_CONF_FILE);
-    if (configfile != null) {
-      mount.conf_read_file(configfile);
-    }
-
-    /* Set auth keyfile */
-    String keyfile = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_KEYFILE);
-    if (keyfile != null) {
-      mount.conf_set("keyfile", keyfile);
-    }
-
-    /* Set auth keyring */
-    String keyring = conf.getValue(PropertyKey.UNDERFS_CEPHFS_AUTH_KEYRING);
-    if (keyring != null) {
-      mount.conf_set("keyring", keyring);
-    }
-
-    /* Set monitor */
-    String monAddr;
-    String monHost = uri.getHost();
-    int monPort = uri.getPort();
-    if (monHost != null && monPort != -1) {
-      monAddr = monHost + ":" + monPort;
-    } else {
-      monAddr = conf.getValue(PropertyKey.UNDERFS_CEPHFS_MON_ADDR);
-    }
-    if (monAddr != null) {
-      mount.conf_set("mon_host", monAddr);
-    }
-
-    /*
-     * Parse and set Ceph configuration options
-     */
-    String configopts = conf.getValue(PropertyKey.UNDERFS_CEPHFS_CONF_OPTS);
-    if (configopts != null) {
-      String[] options = configopts.split(",");
-      for (String option : options) {
-        String[] keyval = option.split("=");
-        if (keyval.length != 2) {
-          throw new IllegalArgumentException("Invalid Ceph option: " + option);
-        }
-        String key = keyval[0];
-        String val = keyval[1];
-        try {
-          mount.conf_set(key, val);
-        } catch (Exception e) {
-          throw new IOException("Error setting Ceph option " + key + " = " + val);
-        }
-      }
-    }
-
-    /*
-     * Use a different root?
-     */
-    String root = conf.getValue(PropertyKey.UNDERFS_CEPHFS_ROOT_DIR);
-
-    /* Actually mount the file system */
-    mount.mount(root);
-
-    /*
-     * Allow reads from replica objects?
-     */
-    String localizeReads = conf.getValue(PropertyKey.UNDERFS_CEPHFS_LOCALIZE_READS);
-    boolean bLocalize = Boolean.parseBoolean(localizeReads);
-    mount.localize_reads(bLocalize);
-
-    mount.chdir("/");
-
-    mFileSystem = new CephFileSystem(mount);
   }
 
   @Override
@@ -182,7 +179,10 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public void close() throws IOException {
-    // Don't close; file systems are singletons and closing it here could break other users
+    if (null != mMount) {
+      mMount.unmount();
+    }
+    mMount = null;
   }
 
   @Override
@@ -195,6 +195,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public OutputStream createDirect(String path, CreateOptions options) throws IOException {
+    path = stripPath(path);
     String parentPath;
     try {
       parentPath = PathUtils.getParent(path);
@@ -213,7 +214,13 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
           }
         }
 
-        return mFileSystem.hl_create(path, options.getMode().toShort());
+        int flags = CephMount.O_WRONLY | CephMount.O_CREAT | CephMount.O_TRUNC;
+        short mode = options.getMode().toShort();
+        int bufferSize = 1 << 22;
+
+        int fd = openFile(path, flags, mode);
+
+        return new CephOutputStream(mMount, fd, bufferSize);
       } catch (IOException e) {
         LOG.warn("Retry count {} : {} ", retryPolicy.getRetryCount(), e.getMessage());
         te = e;
@@ -224,31 +231,68 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public boolean deleteDirectory(String path, DeleteOptions options) throws IOException {
-    return isDirectory(path) && delete(path, options.isRecursive());
+    path = stripPath(path);
+    if (isDirectory(path)) {
+      IOException te = null;
+      RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
+      while (retryPolicy.attemptRetry()) {
+        try {
+          return delete(path, options.isRecursive());
+        } catch (IOException e) {
+          LOG.warn("Retry count {} : {}", retryPolicy.getRetryCount(), e.getMessage());
+          te = e;
+        }
+      }
+      throw te;
+    }
+    return false;
   }
 
   @Override
   public boolean deleteFile(String path) throws IOException {
-    return isFile(path) && delete(path, false);
+    path = stripPath(path);
+    if (isFile(path)) {
+      IOException te = null;
+      RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
+      while (retryPolicy.attemptRetry()) {
+        try {
+          return delete(path, false);
+        } catch (IOException e) {
+          LOG.warn("Retry count {} : {}", retryPolicy.getRetryCount(), e.getMessage());
+          te = e;
+        }
+      }
+      throw te;
+    }
+    return false;
   }
 
   @Override
   public boolean exists(String path) throws IOException {
-    return mFileSystem.hl_exists(path);
+    path = stripPath(path);
+    try {
+      CephStat stat = new CephStat();
+      lstat(path, stat);
+      return true;
+    } catch (FileNotFoundException e) {
+      return false;
+    }
   }
 
   @Override
   public long getBlockSizeByte(String path) throws IOException {
+    path = stripPath(path);
     CephStat stat = new CephStat();
-    mFileSystem.lstat(path, stat);
+    lstat(path, stat);
 
     return stat.blksize;
   }
 
   @Override
   public UfsDirectoryStatus getDirectoryStatus(String path) throws IOException {
+    path = stripPath(path);
     CephStat stat = new CephStat();
-    mFileSystem.lstat(path, stat);
+    lstat(path, stat);
 
     return new UfsDirectoryStatus(path, null, null, (short) stat.mode);
   }
@@ -288,7 +332,8 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
    * @return Where each object corresponds to a block within the given range
    */
   private List<String> getFileBlockLocations(String path, long start, long len) throws IOException {
-    int fh = mFileSystem.open(path, CephMount.O_RDONLY, 0);
+    path = stripPath(path);
+    int fh = openFile(path, CephMount.O_RDONLY, 0);
     if (fh < 0) {
       LOG.error("getFileBlockLocations:got error " + fh + ", exiting and returning null!");
       return null;
@@ -299,7 +344,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
     long curPos = start;
     long endOff = curPos + len;
     do {
-      CephFileExtent extent = mFileSystem.get_file_extent(fh, curPos);
+      CephFileExtent extent = get_file_extent(fh, curPos);
 
       int[] osds = extent.getOSDs();
       String[] hosts = new String[osds.length];
@@ -311,7 +356,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
          * a new configuration option that allows users to map their custom
          * crush types to hosts and topology.
          */
-        Bucket[] loc = mFileSystem.get_osd_crush_location(osds[i]);
+        Bucket[] loc = get_osd_crush_location(osds[i]);
         for (Bucket bucket : loc) {
           String type = bucket.getType();
           if (type.compareTo("host") == 0) {
@@ -325,7 +370,7 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
       curPos += extent.getLength();
     } while (curPos < endOff);
 
-    mFileSystem.close(fh);
+    mMount.close(fh);
 
     return ret;
   }
@@ -339,8 +384,9 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
    */
   @Override
   public UfsFileStatus getFileStatus(String path) throws IOException {
+    path = stripPath(path);
     CephStat stat = new CephStat();
-    mFileSystem.lstat(path, stat);
+    lstat(path, stat);
 
     return new UfsFileStatus(path, stat.size, stat.m_time,
         null, null, (short) stat.mode);
@@ -348,8 +394,9 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public long getSpace(String path, SpaceType type) throws IOException {
+    path = stripPath(path);
     CephStatVFS stat = new CephStatVFS();
-    mFileSystem.statfs(path, stat);
+    statfs(path, stat);
 
     // Ignoring the path given, will give information for entire cluster
     // as Alluxio can load/store data out of entire CephFS cluster
@@ -367,12 +414,20 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public boolean isDirectory(String path) throws IOException {
-    return mFileSystem.isDirectory(path);
+    path = stripPath(path);
+    CephStat stat = new CephStat();
+    lstat(path, stat);
+
+    return stat.isDir();
   }
 
   @Override
   public boolean isFile(String path) throws IOException {
-    return mFileSystem.isFile(path);
+    path = stripPath(path);
+    CephStat stat = new CephStat();
+    lstat(path, stat);
+
+    return stat.isFile();
   }
 
   /**
@@ -384,13 +439,14 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
   @Override
   @Nullable
   public UfsStatus[] listStatus(String path) throws IOException {
-    String[] dirlist = mFileSystem.listdir(path);
+    path = stripPath(path);
+    String[] dirlist = listDirectory(path);
     if (dirlist != null) {
       UfsStatus[] status = new UfsStatus[dirlist.length];
 
       for (int i = 0; i < status.length; i++) {
         CephStat stat = new CephStat();
-        mFileSystem.lstat(PathUtils.concatPath(path, dirlist[i]), stat);
+        lstat(PathUtils.concatPath(path, dirlist[i]), stat);
 
         if (!stat.isDir()) {
           status[i] = new UfsFileStatus(dirlist[i], stat.size, stat.m_time,
@@ -415,25 +471,9 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
     // no-op
   }
 
-  private String getParentPath(String path) throws IOException {
-    try {
-      return PathUtils.getParent(path);
-    } catch (InvalidPathException e) {
-      throw new IOException(e);
-    }
-  }
-
-  private String getFileName(String path) throws IOException {
-    try {
-      String parent = PathUtils.getParent(path);
-      return PathUtils.subtractPaths(path, parent);
-    } catch (InvalidPathException e) {
-      throw new IOException(e);
-    }
-  }
-
   @Override
   public boolean mkdirs(String path, MkdirsOptions options) throws IOException {
+    path = stripPath(path);
     IOException te = null;
     RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
     while (retryPolicy.attemptRetry()) {
@@ -453,7 +493,11 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
         }
         while (!dirsToMake.empty()) {
           String dirToMake = dirsToMake.pop();
-          mFileSystem.hl_mkdirs(dirToMake, options.getMode().toShort());
+          try {
+            mMount.mkdirs(dirToMake, options.getMode().toShort());
+          } catch (CephFileAlreadyExistsException e) {
+            // can be ignored safely
+          }
           // Set the owner to the Alluxio client user to achieve permission delegation.
           // Alluxio server-side user is required to be a HDFS superuser. If it fails to set owner,
           // proceeds with mkdirs and print out an warning message.
@@ -475,11 +519,20 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public InputStream open(String path, OpenOptions options) throws IOException {
+    path = stripPath(path);
     IOException te = null;
     RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
+    int bufferSize = 1 << 22;
     while (retryPolicy.attemptRetry()) {
       try {
-        CephInputStream inputStream = mFileSystem.hl_open(path);
+        int fd = openFile(path, CephMount.O_RDONLY, 0);
+
+        /* get file size */
+        CephStat stat = new CephStat();
+        mMount.fstat(fd, stat);
+
+        CephInputStream inputStream = new CephInputStream(mMount, fd, stat.size, bufferSize);
+
         try {
           inputStream.seek(options.getOffset());
         } catch (IOException e) {
@@ -521,7 +574,8 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
 
   @Override
   public void setMode(String path, short mode) throws IOException {
-    mFileSystem.chmod(path, mode);
+    path = stripPath(path);
+    mMount.chmod(path, mode);
   }
 
   @Override
@@ -530,83 +584,51 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
   }
 
   /**
-   * Delete a file or directory at path.
-   *
-   * @param path file or directory path
-   * @param recursive whether to delete path recursively
-   * @return true, if succeed
+   * @param path the path to strip the scheme from
+   * @return the path, with the optional scheme stripped away
    */
-  private boolean delete(String path, boolean recursive) throws IOException {
-    IOException te = null;
-    RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
-    while (retryPolicy.attemptRetry()) {
-      try {
-        return hl_delete(path, recursive);
-      } catch (IOException e) {
-        LOG.warn("Retry count {} : {}", retryPolicy.getRetryCount(), e.getMessage());
-        te = e;
-      }
+  private String stripPath(String path) {
+    return new AlluxioURI(path).getPath();
+  }
+
+  private String getParentPath(String path) throws IOException {
+    try {
+      return PathUtils.getParent(path);
+    } catch (InvalidPathException e) {
+      throw new IOException(e);
     }
-    throw te;
+  }
+
+  private String getFileName(String path) throws IOException {
+    try {
+      String parent = PathUtils.getParent(path);
+      return PathUtils.subtractPaths(path, parent);
+    } catch (InvalidPathException e) {
+      throw new IOException(e);
+    }
   }
 
   /**
-   * Get the FileStatus for each listing in a directory.
+   * Get the file or directory for each listing in a directory.
    * @param path The directory to get listings from
    * @return FileStatus[] containing one FileStatus for each directory listing;
    *         null if path does not exist.
    */
-  private String[] hl_listdir(String path) throws IOException {
+  private String[] listDirectory(String path) throws IOException {
     if (isFile(path)) {
       return new String[]{path};
     }
 
-    String[] dirlist = mFileSystem.listdir(path);
+    String[] dirlist = listdir(path);
     if (dirlist != null) {
-      String[] status = new String[dirlist.length];
-      for (int i = 0; i < status.length; i++) {
-        status[i] = PathUtils.concatPath(path, dirlist[i]);
+      String[] list = new String[dirlist.length];
+      for (int i = 0; i < list.length; i++) {
+        list[i] = PathUtils.concatPath(path, dirlist[i]);
       }
-      return status;
+      return list;
     } else {
       throw new FileNotFoundException("File " + path + " does not exist.");
     }
-  }
-
-  private boolean hl_delete(String path, boolean recursive) throws IOException {
-    /* path exists? */
-    CephStat stat = new CephStat();
-
-    try {
-      mFileSystem.lstat(path, stat);
-    } catch (FileNotFoundException e) {
-      return false;
-    }
-
-    /* we're done if its a file */
-    if (stat.isFile()) {
-      mFileSystem.unlink(path);
-      return true;
-    }
-
-    /* get directory contents */
-    String[] dirlist = hl_listdir(path);
-    if (dirlist == null) {
-      return false;
-    }
-
-    if (!recursive && dirlist.length > 0) {
-      throw new IOException("Directory " + path + "is not empty.");
-    }
-
-    for (String fs : dirlist) {
-      if (!hl_delete(fs, recursive)) {
-        return false;
-      }
-    }
-
-    mFileSystem.rmdir(path);
-    return true;
   }
 
   /**
@@ -617,11 +639,27 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
    * @return true if rename succeeds
    */
   private boolean rename(String src, String dst) throws IOException {
+    src = stripPath(src);
+    dst = stripPath(dst);
     IOException te = null;
     RetryPolicy retryPolicy = new CountingRetry(MAX_TRY);
     while (retryPolicy.attemptRetry()) {
       try {
-        return hl_rename(src, dst);
+        try {
+          CephStat stat = new CephStat();
+          lstat(dst, stat);
+          if (stat.isDir()) {
+            String fileName = getFileName(src);
+            mMount.rename(src, PathUtils.concatPath(dst, fileName));
+            return true;
+          }
+          return false;
+        } catch (FileNotFoundException e) {
+          // can be ignored safely
+        }
+
+        mMount.rename(src, dst);
+        return true;
       } catch (IOException e) {
         LOG.warn("{} try to rename {} to {} : {}", retryPolicy.getRetryCount(), src, dst,
             e.getMessage());
@@ -631,35 +669,109 @@ public class CephFSUnderFileSystem extends BaseUnderFileSystem
     throw te;
   }
 
-  /**
-   * Rename a file or directory.
-   * @param src The current path of the file/directory
-   * @param dst The new name for the path
-   * @return true if the rename succeeded, false otherwise
+  /*
+   * Open a file. Ceph will not complain if we open a directory, but this
+   * isn't something that Hadoop expects and we should throw an exception in
+   * this case.
    */
-  boolean hl_rename(String src, String dst) throws IOException {
-    try {
-      CephStat stat = new CephStat();
-      mFileSystem.lstat(dst, stat);
-      if (stat.isDir()) {
-        String fileName = getFileName(src);
-        mFileSystem.rename(src, PathUtils.concatPath(dst, fileName));
+  private int openFile(String path, int flags, int mode) throws IOException {
+    int fd = mMount.open(path, flags, mode);
+    CephStat stat = new CephStat();
+    mMount.fstat(fd, stat);
+    if (stat.isDir()) {
+      mMount.close(fd);
+      throw new FileNotFoundException();
+    }
+    return fd;
+  }
 
-        return true;
-      }
-      return false;
-    } catch (FileNotFoundException e) {
-      throw e;
-    } catch (Exception e) {
-      return false;
+  /*
+   * Same as open(path, flags, mode) alternative, but takes custom striping
+   * parameters that are used when a file is being created.
+   */
+  private int openFile(String path, int flags, int mode, int stripe_unit, int stripe_count,
+           int object_size, String data_pool) throws IOException {
+    int fd = mMount.open(path, flags, mode, stripe_unit,
+        stripe_count, object_size, data_pool);
+    CephStat stat = new CephStat();
+    mMount.fstat(fd, stat);
+    if (stat.isDir()) {
+      mMount.close(fd);
+      throw new FileNotFoundException();
+    }
+    return fd;
+  }
+
+  private void lstat(String path, CephStat stat) throws IOException {
+    try {
+      mMount.lstat(path, stat);
+    } catch (CephNotDirectoryException e) {
+      throw new FileNotFoundException();
     }
   }
 
-  /**
-   * @param path the path to strip the scheme from
-   * @return the path, with the optional scheme stripped away
-   */
-  private String stripPath(String path) {
-    return new AlluxioURI(path).getPath();
+  private void statfs(String path, CephStatVFS stat) throws IOException {
+    try {
+      mMount.statfs(path, stat);
+    } catch (FileNotFoundException e) {
+      throw new FileNotFoundException();
+    }
+  }
+
+  private String[] listdir(String path) throws IOException {
+    CephStat stat = new CephStat();
+    try {
+      mMount.lstat(path, stat);
+    } catch (FileNotFoundException e) {
+      return null;
+    }
+    if (!stat.isDir()) {
+      return null;
+    }
+    return mMount.listdir(path);
+  }
+
+  private boolean delete(String path, boolean recursive) throws IOException {
+    /* path exists? */
+    CephStat stat = new CephStat();
+
+    try {
+      lstat(path, stat);
+    } catch (FileNotFoundException e) {
+      return false;
+    }
+
+    /* we're done if its a file */
+    if (stat.isFile()) {
+      mMount.unlink(path);
+      return true;
+    }
+
+    /* get directory contents */
+    String[] dirlist = listDirectory(path);
+    if (dirlist == null) {
+      return false;
+    }
+
+    if (!recursive && dirlist.length > 0) {
+      throw new IOException("Directory " + path + "is not empty.");
+    }
+
+    for (String fs : dirlist) {
+      if (!delete(fs, recursive)) {
+        return false;
+      }
+    }
+
+    mMount.rmdir(path);
+    return true;
+  }
+
+  private Bucket[] get_osd_crush_location(int osd) throws IOException {
+    return mMount.get_osd_crush_location(osd);
+  }
+
+  private CephFileExtent get_file_extent(int fd, long offset) throws IOException {
+    return mMount.get_file_extent(fd, offset);
   }
 }

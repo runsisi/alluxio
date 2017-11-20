@@ -30,7 +30,7 @@ import java.io.OutputStream;
 public class CephOutputStream extends OutputStream {
   private boolean mClosed;
 
-  private CephFileSystem mCephFs;
+  private CephMount mMount;
 
   private int mFileHandle;
 
@@ -43,8 +43,8 @@ public class CephOutputStream extends OutputStream {
    * @param fh The Ceph filehandle to connect to
    * @param bufferSize Buffer size
    */
-  public CephOutputStream(CephFileSystem cephfs, int fh, int bufferSize) {
-    mCephFs = cephfs;
+  public CephOutputStream(CephMount cephfs, int fh, int bufferSize) {
+    mMount = cephfs;
     mFileHandle = fh;
     mClosed = false;
     mBuffer = new byte[bufferSize];
@@ -65,7 +65,7 @@ public class CephOutputStream extends OutputStream {
    */
   public synchronized long getPos() throws IOException {
     checkOpen();
-    return mCephFs.lseek(mFileHandle, 0, CephMount.SEEK_CUR);
+    return mMount.lseek(mFileHandle, 0, CephMount.SEEK_CUR);
   }
 
   @Override
@@ -102,9 +102,9 @@ public class CephOutputStream extends OutputStream {
     }
 
     while (mBufUsed > 0) {
-      int ret = mCephFs.write(mFileHandle, mBuffer, mBufUsed, -1);
+      int ret = (int) mMount.write(mFileHandle, mBuffer, mBufUsed, -1);
       if (ret < 0) {
-        throw new IOException("ceph.write: ret=" + ret);
+        throw new IOException("ceph.mount.write: ret=" + ret);
       }
 
       if (ret == mBufUsed) {
@@ -134,14 +134,14 @@ public class CephOutputStream extends OutputStream {
   public synchronized void flush() throws IOException {
     checkOpen();
     flushBuffer(); // buffer -> libcephfs
-    mCephFs.fsync(mFileHandle); // libcephfs -> cluster
+    mMount.fsync(mFileHandle, false); // libcephfs -> cluster
   }
 
   @Override
   public synchronized void close() throws IOException {
     checkOpen();
     flush();
-    mCephFs.close(mFileHandle);
+    mMount.close(mFileHandle);
     mClosed = true;
   }
 }

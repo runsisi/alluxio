@@ -32,7 +32,7 @@ public class CephInputStream extends InputStream {
 
   private long mFileLength;
 
-  private CephFileSystem mCephFs;
+  private CephMount mMount;
 
   private byte[] mBuffer;
   private int mBufPos = 0;
@@ -47,14 +47,14 @@ public class CephInputStream extends InputStream {
    *                you will need to close and re-open it to access the new data
    * @param bufferSize Buffer size
    */
-  public CephInputStream(CephFileSystem cephfs,
+  public CephInputStream(CephMount cephfs,
       int fh, long flength, int bufferSize) {
     // Whoever's calling the constructor is responsible for doing the actual ceph_open
     // call and providing the file handle.
     mFileLength = flength;
     mFileHandle = fh;
     mClosed = false;
-    mCephFs = cephfs;
+    mMount = cephfs;
     mBuffer = new byte[bufferSize];
     LOG.debug(
         "CephInputStream constructor: initializing stream with fh " + fh
@@ -63,14 +63,14 @@ public class CephInputStream extends InputStream {
   }
 
   private synchronized boolean fillBuffer() throws IOException {
-    mBufValid = mCephFs.read(mFileHandle, mBuffer, mBuffer.length, -1);
+    mBufValid = (int) mMount.read(mFileHandle, mBuffer, mBuffer.length, -1);
     mBufPos = 0;
     if (mBufValid < 0) {
       int err = mBufValid;
 
       mBufValid = 0;
       // attempt to reset to old position. If it fails, too bad.
-      mCephFs.lseek(mFileHandle, mCephPos, CephMount.SEEK_SET);
+      mMount.lseek(mFileHandle, mCephPos, CephMount.SEEK_SET);
       throw new IOException("Failed to fill read buffer! Error code:" + err);
     }
     mCephPos += mBufValid;
@@ -113,7 +113,7 @@ public class CephInputStream extends InputStream {
     }
     long oldPos = mCephPos;
 
-    mCephPos = mCephFs.lseek(mFileHandle, targetPos, CephMount.SEEK_SET);
+    mCephPos = mMount.lseek(mFileHandle, targetPos, CephMount.SEEK_SET);
     mBufValid = 0;
     mBufPos = 0;
     if (mCephPos < 0) {
@@ -228,7 +228,7 @@ public class CephInputStream extends InputStream {
   public void close() throws IOException {
     LOG.trace("CephOutputStream.close:enter");
     if (!mClosed) {
-      mCephFs.close(mFileHandle);
+      mMount.close(mFileHandle);
 
       mClosed = true;
       LOG.trace("CephOutputStream.close:exit");
